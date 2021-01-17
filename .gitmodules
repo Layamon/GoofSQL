@@ -13,3 +13,6 @@
 [submodule "storage/rocksdb/rocksdb"]
 	path = storage/rocksdb/rocksdb
 	url = https://github.com/percona/rocksdb
+[submodule "storage/goof/third-party/googletest"]
+	path = storage/goof/third-party/googletest
+	url = https://github.com/google/googletest.git
