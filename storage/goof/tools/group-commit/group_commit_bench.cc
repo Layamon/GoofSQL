@@ -23,10 +23,13 @@ namespace group_commit {
 enum class GroupRole { LEADER, FOLLOWER, COMPLETE };
 class GroupWriter : public Writer {
  public:
-  GroupWriter(int logfd, int id)
-      : Writer(logfd), role_(GroupRole::FOLLOWER), id_(id) {
+  GroupWriter(int logfd, int id) : Writer(logfd), id_(id) {
     // prepare log data
     std::shuffle(outdata_.begin(), outdata_.end(), g);
+  }
+  ~GroupWriter() {
+    older_ = nullptr;
+    newer_ = nullptr;
   }
   void DoWrite();
   void WaitState();
@@ -35,7 +38,7 @@ class GroupWriter : public Writer {
 
   GroupWriter *older_{nullptr};
   GroupWriter *newer_{nullptr};
-  GroupRole role_;
+  std::atomic<GroupRole> role_{GroupRole::FOLLOWER};
   int id_;
 
   std::mutex mu_;
@@ -47,36 +50,46 @@ class GroupWriter : public Writer {
 
 std::atomic<group_commit::GroupWriter *> writer_list_head{nullptr};
 std::atomic<bool> has_leader{false};
+
+static inline void CheckCycle(GroupWriter *w) {
+  GroupWriter *cur = w;
+  size_t i = 0;
+  do {
+    cur = cur->older_;
+    ++i;
+    if (cur == w) {
+      std::cout << "Cycle: " << i << std::endl;
+    }
+  } while (cur != nullptr);
+  assert(cur == nullptr);
+}
+
 // return true if w join group and become leader
 bool JoinGroup(GroupWriter *w) {
   assert(w->older_ == nullptr);
-  while (true) {
-    if (writer_list_head.compare_exchange_strong(w->older_, w)) {
-      return w->older_ == nullptr;
-    }
+  size_t i = 0;
+  while (!writer_list_head.compare_exchange_weak(w->older_, w)) {
+    //CheckCycle(w);
+    // assert(w->older_ != nullptr);
+    ++i;
   }
+  return w->older_ == nullptr;
 }
 
 void GroupWriter::WaitState() {
-  //std::cout << "Await: " << id_ << "; " << std::endl;
   std::unique_lock<std::mutex> unique_lock(mu_);
   cv_.wait(unique_lock, [this]() {
-    bool not_spurious =
-        (role_ == GroupRole::COMPLETE || role_ == GroupRole::LEADER);
-    //std::cout << "Aweak: " << id_ << (not_spurious ? " true; " : " false; ")
-    //          << std::endl;
-    return not_spurious;
+    //std::cout << "Aweak: " << id_ << std::endl;
+    return (role_.load() == GroupRole::COMPLETE ||
+            role_.load() == GroupRole::LEADER);
   });
 }
 
 void GroupWriter::NotifyState(GroupRole r) {
-  if (r == GroupRole::LEADER) {
-    std::cout << "Notify Leader: " << id_ << std::endl;
-  } else {
-    std::cout << "Notify Complete: " << id_ << std::endl;
+  {
+    std::lock_guard<std::mutex> guard(mu_);
+    role_.store(r);
   }
-  assert(role_ == GroupRole::FOLLOWER);
-  role_ = r;
   cv_.notify_one();
 }
 
@@ -118,7 +131,8 @@ void BatchWrite(GroupWriter *tail, GroupWriter *head) {
   if (FLAGS_enable_sync) {
     ::fsync(head->logfd());
   }
-  std::cout << "BatchWrite GroupSize: " << head->group_size_ << std::endl;
+  std::cout << "BatchWrite GroupSize: " << head->group_size_
+            << ", id: " << head->id_ << std::endl;
 }
 
 bool CheckGroup(GroupWriter *tail, GroupWriter *head) {
@@ -129,12 +143,29 @@ bool CheckGroup(GroupWriter *tail, GroupWriter *head) {
     group_size++;
   }
   assert(group_size == head->group_size_);
-  std::cout << "Check GroupSize: " << group_size << std::endl;
+  //std::cout << "Check GroupSize: " << group_size << std::endl;
   return false;
 }
 
 void LeaderExit(GroupWriter *last_writer, GroupWriter *leader) {
   assert(last_writer != nullptr && leader != nullptr);
+
+  GroupWriter *new_leader = last_writer;
+  bool has_pending_writer =
+      !(writer_list_head.compare_exchange_weak(new_leader, nullptr));
+  if (has_pending_writer) {
+    // there are new writers and aweak new leader
+    assert(new_leader != nullptr && new_leader != last_writer);
+
+    while (new_leader->older_ != last_writer) {
+      new_leader = new_leader->older_;
+      assert(new_leader != nullptr);
+    }
+
+    assert(new_leader->older_ == last_writer && last_writer->newer_ == nullptr);
+    new_leader->older_ = nullptr;
+    new_leader->NotifyState(GroupRole::LEADER);
+  }
 
   // aweak follower
   CheckGroup(last_writer, leader);
@@ -149,38 +180,22 @@ void LeaderExit(GroupWriter *last_writer, GroupWriter *leader) {
     aweak_follower_cnt++;
   }
   assert(aweak_follower_cnt == leader->group_size_ - 1);
-
-  GroupWriter *new_leader = last_writer;
-  bool has_pending_writer =
-      !(writer_list_head.compare_exchange_strong(new_leader, nullptr));
-  if (has_pending_writer) {
-    // there are new writers and aweak new leader
-    assert(new_leader != nullptr && new_leader != last_writer);
-
-    while (new_leader->older_ != last_writer) {
-      new_leader = new_leader->older_;
-      assert(new_leader != nullptr);
-    }
-
-    assert(new_leader->older_ == last_writer);
-    new_leader->NotifyState(GroupRole::LEADER);
-  }
 }
 
 void DoWrite(int fd, int id) {
   GroupWriter writer(fd, id);
 
   if (JoinGroup(&writer)) {
-    writer.role_ = GroupRole::LEADER;
-  } else {
+    writer.role_.store(GroupRole::LEADER);
+  } else if (writer.role_ == GroupRole::FOLLOWER) {
     // Follower wait until its state changed
     writer.WaitState();
   }
 
-  if (writer.role_ == GroupRole::COMPLETE) {
+  if (writer.role_.load() == GroupRole::COMPLETE) {
     return;
   }
-  assert(writer.role_ == GroupRole::LEADER);
+  assert(writer.role_.load() == GroupRole::LEADER);
   auto last_writer = writer_list_head.load();
   BatchWrite(last_writer, &writer);
 
