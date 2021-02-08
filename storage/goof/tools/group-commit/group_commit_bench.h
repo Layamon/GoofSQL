@@ -19,9 +19,11 @@ DEFINE_uint32(writers, 8, "parallel writer which write into the same log.");
 DEFINE_uint32(records, 100000, "how much records to be write into log.");
 
 std::atomic<int32_t> record_cnt;
+std::atomic<int32_t> actual_cnt;
+std::atomic<uint64_t> seq;
 
 uint32_t NewSequence() {
-  return FLAGS_records - record_cnt.fetch_sub(1, std::memory_order_relaxed);
+  return seq.fetch_add(1, std::memory_order_relaxed);
 }
 struct spinlock {
   // from https://rigtorp.se/spinlock/
@@ -80,6 +82,8 @@ class Writer {
     if (FLAGS_enable_sync) {
       ::fsync(log_fd_);
     }
+    record_cnt.fetch_add(1, std::memory_order_relaxed);
+    actual_cnt.fetch_add(1, std::memory_order_relaxed);
     log_latch->unlock();
   }
 };

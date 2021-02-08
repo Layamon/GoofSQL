@@ -13,7 +13,7 @@ struct spinlock log_latch;
 void Write(int fd) {
   Writer writer(fd);
 
-  while (record_cnt.load(std::memory_order_relaxed) > 0) {
+  while (record_cnt.load(std::memory_order_relaxed) < FLAGS_records) {
     writer.DoWrite(&log_latch);
   }
 }
@@ -131,8 +131,10 @@ void BatchWrite(GroupWriter *tail, GroupWriter *head) {
   if (FLAGS_enable_sync) {
     ::fsync(head->logfd());
   }
-  std::cout << "BatchWrite GroupSize: " << head->group_size_
-            << ", id: " << head->id_ << std::endl;
+
+  actual_cnt.fetch_add(head->group_size_, std::memory_order_relaxed);
+  // std::cout << "BatchWrite GroupSize: " << head->group_size_
+  //          << ", id: " << head->id_ << std::endl;
 }
 
 bool CheckGroup(GroupWriter *tail, GroupWriter *head) {
@@ -184,6 +186,7 @@ void LeaderExit(GroupWriter *last_writer, GroupWriter *leader) {
 
 void DoWrite(int fd, int id) {
   GroupWriter writer(fd, id);
+  record_cnt.fetch_add(1, std::memory_order_relaxed);
 
   if (JoinGroup(&writer)) {
     writer.role_.store(GroupRole::LEADER);
@@ -203,7 +206,7 @@ void DoWrite(int fd, int id) {
 }
 
 void Write(int fd, int id) {
-  while (record_cnt.load(std::memory_order_relaxed) > 0) {
+  while (record_cnt.load(std::memory_order_relaxed) < FLAGS_records) {
     DoWrite(fd, id);
   }
 }
@@ -222,7 +225,9 @@ bool CheckResult(const std::string &file_name) {
     }
   };
 
-  std::cout << "FileSize: " << file_size() << std::endl;
+  std::cout << "FileSize: " << file_size() << ", actual records: " << actual_cnt
+            << std::endl;
+  assert(actual_cnt.load() == record_cnt.load());
 }
 
 int main(int argc, char **argv) {
@@ -239,7 +244,7 @@ int main(int argc, char **argv) {
   } else {
     log_file_fd = ::open(log_file_name.c_str(), O_RDWR | O_CREAT | O_APPEND);
   }
-  record_cnt.store(FLAGS_records);
+  record_cnt.store(0);
   std::vector<std::thread> workers;
 
   if (FLAGS_enable_group_commit) {
