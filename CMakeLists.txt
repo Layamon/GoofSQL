@@ -353,6 +353,8 @@ IF(${REALPATH_CMAKE_SOURCE_DIR} STREQUAL ${REALPATH_CMAKE_BINARY_DIR})
     MESSAGE(WARNING "This is an in-source build")
   ELSE()
     MESSAGE(FATAL_ERROR
+      "src dir: " ${REALPATH_CMAKE_SOURCE_DIR}
+      "bin dir: " ${REALPATH_CMAKE_BINARY_DIR}
       "Please do not build in-source. "
       "Out-of source builds are highly recommended: "
       "you can have multiple builds for the same source, "
