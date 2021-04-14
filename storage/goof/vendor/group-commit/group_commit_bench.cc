@@ -111,7 +111,8 @@ void BatchWrite(GroupWriter *tail, GroupWriter *head) {
 
   // batch all data in group
   uint32_t group_data_size = 4 + 10 * head->group_size_;
-  char outbuf[group_data_size];
+  std::string outbuf(group_data_size, 0);
+  // char outbuf[group_data_size];
   {
     auto mem_offset = &outbuf[0] + 4;
     GroupWriter* cur = head;
@@ -127,7 +128,7 @@ void BatchWrite(GroupWriter *tail, GroupWriter *head) {
   }
 
   // write into file
-  ::write(head->logfd(), outbuf, group_data_size);
+  ::write(head->logfd(), outbuf.c_str(), group_data_size);
   if (FLAGS_enable_sync) {
     ::fsync(head->logfd());
   }
@@ -228,6 +229,7 @@ bool CheckResult(const std::string &file_name) {
   std::cout << "FileSize: " << file_size() << ", actual records: " << actual_cnt
             << std::endl;
   assert(actual_cnt.load() == record_cnt.load());
+  return true;
 }
 
 int main(int argc, char **argv) {
@@ -248,16 +250,16 @@ int main(int argc, char **argv) {
   std::vector<std::thread> workers;
 
   if (FLAGS_enable_group_commit) {
-    for (int i = 0; i < FLAGS_writers; i++) {
+    for (uint32_t i = 0; i < FLAGS_writers; i++) {
       workers.emplace_back(group_commit::Write, log_file_fd, i);
     }
   } else {
-    for (int i = 0; i < FLAGS_writers; i++) {
+    for (uint32_t i = 0; i < FLAGS_writers; i++) {
       workers.emplace_back(single_commit::Write, log_file_fd);
     }
   }
 
-  for (int i = 0; i < FLAGS_writers; i++) {
+  for (uint32_t i = 0; i < FLAGS_writers; i++) {
     workers[i].join();
   }
   auto end = system_clock::now();

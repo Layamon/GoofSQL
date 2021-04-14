@@ -18,8 +18,8 @@ DEFINE_bool(enable_direct, false, "Open Log File in O_DIRECT?");
 DEFINE_uint32(writers, 8, "parallel writer which write into the same log.");
 DEFINE_uint32(records, 100000, "how much records to be write into log.");
 
-std::atomic<int32_t> record_cnt;
-std::atomic<int32_t> actual_cnt;
+std::atomic<uint32_t> record_cnt;
+std::atomic<uint32_t> actual_cnt;
 std::atomic<uint64_t> seq;
 
 uint32_t NewSequence() {
